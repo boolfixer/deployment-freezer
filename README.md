@@ -102,3 +102,40 @@ status:
 | reason       | string            | Short, CamelCase identifier describing why the condition has its current status. Possible values:<br>• **TargetFound:** `Found`, `NotFound`, `UIDMismatch`<br>• **Ownership:** `Acquired`, `DeniedAlreadyFrozen`, `Lost`, `Released`<br>• **FreezeProgress:** `ScalingDown`, `ScaledToZero`, `AwaitingPDB`<br>• **UnfreezeProgress:** `ScalingUp`, `ScaledUp`, `QuotaExceeded`, `PartialRestore`<br>• **Health:** `Normal`, `Degraded`, `APIConflict`, `RBACDenied`<br>• **SpecChangedDuringFreeze:** `Observed` |
 | message      | string            | Human-readable explanation for the condition (intended for users/operators).                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | lastTransitionTime | RFC3339 timestamp | Time when this condition last changed status.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+
+---
+
+## 5. Edge cases: Conditions Matrix
+
+So far only “happy path” was considered. Time for real fun - edge cases 😁:
+
+| Type                        | Status  | Reason              | Meaning                                                                                                                                   |
+| --------------------------- | ------- | ------------------- |-------------------------------------------------------------------------------------------------------------------------------------------|
+| **TargetFound**             | True    | Found               | Target Deployment exists and matches expectations.                                                                                        |
+| **TargetFound**             | False   | NotFound            | Target Deployment with given name does not exist (in the same namespace).                                                                 |
+| **TargetFound**             | False   | UIDMismatch         | Deployment exists but with a different UID than the one originally frozen (Deployment recreated with same name, treated as a new object). |
+| **TargetFound**             | Unknown | —                   | Controller can’t determine if the target exists (e.g., transient API error).                                                              |
+| **Ownership**               | True    | Acquired            | This CR currently holds the ownership/lock over the target Deployment.                                                                    |
+| **Ownership**               | False   | DeniedAlreadyFrozen | Another CR already owns/froze this Deployment; lock not acquired.                                                                         |
+| **Ownership**               | False   | Lost                | Ownership was lost (annotation removed/overwritten by someone else).                                                                      |
+| **Ownership**               | False   | Released            | Operator intentionally released ownership (e.g., after successful unfreeze or CR finalize).                                               |
+| **Ownership**               | Unknown | —                   | Controller can’t determine ownership (e.g., read conflict/API error).                                                                     |
+| **FreezeProgress**          | False   | ScalingDown         | Freeze in progress; Deployment/ReplicaSet not yet at 0 replicas.                                                                          |
+| **FreezeProgress**          | True    | ScaledToZero        | Freeze complete; Deployment is fully scaled down to 0.                                                                                    |
+| **FreezeProgress**          | False   | AwaitingPDB         | PodDisruptionBudget currently blocks scaling further down.                                                                                |
+| **FreezeProgress**          | Unknown | —                   | Controller can’t evaluate freeze progress right now.                                                                                      |
+| **UnfreezeProgress**        | False   | ScalingUp           | Unfreeze in progress; replicas not yet restored to target/original count.                                                                 |
+| **UnfreezeProgress**        | True    | ScaledUp            | Unfreeze complete; replicas restored to original target.                                                                                  |
+| **UnfreezeProgress**        | False   | QuotaExceeded       | ResourceQuota or cluster limits prevent restoring full replicas.                                                                          |
+| **UnfreezeProgress**        | False   | PartialRestore      | Some replicas restored, but below desired (continuing to reconcile).                                                                      |
+| **UnfreezeProgress**        | Unknown | —                   | Controller can’t evaluate unfreeze progress right now.                                                                                    |
+| **Health**                  | True    | Normal              | Reconciliation proceeding normally; no notable issues.                                                                                    |
+| **Health**                  | False   | Degraded            | Controller observed a degraded state; partial functionality or retries ongoing.                                                           |
+| **Health**                  | False   | APIConflict         | Update/patch hit resourceVersion conflict; controller will retry.                                                                         |
+| **Health**                  | False   | RBACDenied          | Operator lacks permission to act on required resources.                                                                                   |
+| **Health**                  | Unknown | —                   | Controller health for this CR can’t be evaluated (transient error).                                                                       |
+| **SpecChangedDuringFreeze** | True    | Observed            | Target Deployment’s Pod template/spec changed while frozen.                                                                               |
+| **SpecChangedDuringFreeze** | False   | —                   | No spec change detected during freeze period.                                                                                             |
+| **SpecChangedDuringFreeze** | Unknown | —                   | Controller couldn’t determine whether spec changed.                                                                                       |
+
+
