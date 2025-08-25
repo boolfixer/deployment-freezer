@@ -1,3 +1,11 @@
+# Requirements:
+
+- Go ≥ 1.22 
+- Docker 
+- kubectl 
+- kind 
+- make
+
 # Overview (big picture)
 
 High-level overview of how it should work.
