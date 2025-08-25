@@ -7,7 +7,7 @@ High-level overview of how it should work.
 ## 1. Components diagram
 A static view of the main Kubernetes actors and how they interact.
 
-![K8s Components Overview](resources/k8-flow-overview.svg)
+![K8s Components Overview](k8-flow-overview.svg)
 
 ---
 
@@ -17,7 +17,7 @@ A simple “happy path” scenario:
 
 > ⚠️ For simplicity, this diagram omits ReplicaSets and HPAs.
 
-![K8s Sequence Diagram](resources/k8-sequence-diagram.svg)
+![K8s Sequence Diagram](k8-sequence-diagram.svg)
 
 ---
 
