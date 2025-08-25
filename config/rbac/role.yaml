@@ -1,11 +1,32 @@
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  labels:
-    app.kubernetes.io/name: deployment-freezer
-    app.kubernetes.io/managed-by: kustomize
   name: manager-role
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - apps.boolfixer.dev
+  resources:
+  - deploymentfreezers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps.boolfixer.dev
+  resources:
+  - deploymentfreezers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - apps.boolfixer.dev
+  resources:
+  - deploymentfreezers/status
+  verbs:
+  - get
+  - patch
+  - update

@@ -8,4 +8,14 @@ layout:
 - go.kubebuilder.io/v4
 projectName: deployment-freezer
 repo: github.com/boolfixer/deployment-freezer
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: boolfixer.dev
+  group: apps
+  kind: DeploymentFreezer
+  path: github.com/boolfixer/deployment-freezer/api/v1alpha1
+  version: v1alpha1
 version: "3"

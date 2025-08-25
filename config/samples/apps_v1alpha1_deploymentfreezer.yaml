@@ -1,0 +1,9 @@
+apiVersion: apps.boolfixer.dev/v1alpha1
+kind: DeploymentFreezer
+metadata:
+  labels:
+    app.kubernetes.io/name: deployment-freezer
+    app.kubernetes.io/managed-by: kustomize
+  name: deploymentfreezer-sample
+spec:
+  # TODO(user): Add fields here
