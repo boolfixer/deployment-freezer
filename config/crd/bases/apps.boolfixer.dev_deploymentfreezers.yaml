@@ -8,16 +8,29 @@ metadata:
 spec:
   group: apps.boolfixer.dev
   names:
+    categories:
+    - all
     kind: DeploymentFreezer
     listKind: DeploymentFreezerList
     plural: deploymentfreezers
+    shortNames:
+    - df
     singular: deploymentfreezer
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.name
+      name: Target
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.freezeUntil
+      name: FreezeUntil
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: DeploymentFreezer is the Schema for the deploymentfreezers API
         properties:
           apiVersion:
             description: |-
@@ -37,18 +50,124 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of DeploymentFreezer
             properties:
-              foo:
-                description: foo is an example field of DeploymentFreezer. Edit deploymentfreezer_types.go
-                  to remove/update
-                type: string
+              durationSeconds:
+                description: Duration of the freeze window in seconds. After this
+                  period, the operator restores the Deployment.
+                format: int64
+                minimum: 1
+                type: integer
+              targetRef:
+                description: Target Deployment reference.
+                properties:
+                  name:
+                    description: Name of the target Deployment (same namespace as
+                      this CR).
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - durationSeconds
+            - targetRef
             type: object
           status:
-            description: status defines the observed state of DeploymentFreezer
+            properties:
+              conditions:
+                description: Fine-grained condition set.
+                items:
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time of the last status change.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Human-readable message (for operators/users).
+                      maxLength: 2048
+                      type: string
+                    reason:
+                      description: Short CamelCase reason for the last transition.
+                      enum:
+                      - Found
+                      - NotFound
+                      - UIDMismatch
+                      - Acquired
+                      - DeniedAlreadyFrozen
+                      - Lost
+                      - Released
+                      - ScalingDown
+                      - ScaledToZero
+                      - AwaitingPDB
+                      - ScalingUp
+                      - ScaledUp
+                      - QuotaExceeded
+                      - PartialRestore
+                      - Normal
+                      - Degraded
+                      - APIConflict
+                      - RBACDenied
+                      - Observed
+                      type: string
+                    status:
+                      description: Whether the condition is satisfied.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: Category of fact.
+                      enum:
+                      - TargetFound
+                      - Ownership
+                      - FreezeProgress
+                      - UnfreezeProgress
+                      - Health
+                      - SpecChangedDuringFreeze
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              freezeUntil:
+                description: Absolute time when the Deployment should be unfrozen.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: Last observed generation of the CR's spec.
+                format: int64
+                type: integer
+              originalReplicas:
+                description: Replicas before freezing (for deterministic restore).
+                format: int32
+                type: integer
+              phase:
+                description: High-level lifecycle summary.
+                enum:
+                - Pending
+                - Freezing
+                - Frozen
+                - Unfreezing
+                - Completed
+                - Denied
+                - Aborted
+                type: string
+              targetRef:
+                description: Cached target info recorded when the freeze started.
+                properties:
+                  name:
+                    description: Cached name of the target Deployment.
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: |-
+                      UID of the Deployment at the time the freeze began
+                      (detects delete+recreate under the same name).
+                    type: string
+                type: object
             type: object
-        required:
-        - spec
         type: object
     served: true
     storage: true
