@@ -1,1 +1,5 @@
 .idea
+
+bin/k8s
+bin/kustomize
+bin/kustomize-v5.6.0
