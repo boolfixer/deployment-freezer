@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -41,6 +42,14 @@ const metricsServiceName = "deployment-freezer-controller-manager-metrics-servic
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "deployment-freezer-metrics-binding"
+
+// Demo application constants for the freeze/unfreeze scenario
+const (
+	demoDeploymentName    = "demo"
+	freezerName           = "freeze-demo"
+	originalReplicas      = 3
+	freezeDurationSeconds = 10
+)
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -257,16 +266,135 @@ var _ = Describe("Manager", Ordered, func() {
 			))
 		})
 
-		// +kubebuilder:scaffold:e2e-webhooks-checks
+		It("freezes and unfreezes a Deployment via DeploymentFreezer", func() {
+			By("creating a demo Deployment with 3 replicas (restricted securityContext)")
+			deployYAML := fmt.Sprintf(
+				"apiVersion: apps/v1\n"+
+					"kind: Deployment\n"+
+					"metadata:\n"+
+					"  name: %s\n"+
+					"  namespace: %s\n"+
+					"  labels:\n"+
+					"    app: demo\n"+
+					"spec:\n"+
+					"  replicas: %d\n"+
+					"  selector:\n"+
+					"    matchLabels:\n"+
+					"      app: demo\n"+
+					"  template:\n"+
+					"    metadata:\n"+
+					"      labels:\n"+
+					"        app: demo\n"+
+					"    spec:\n"+
+					"      securityContext:\n"+
+					"        seccompProfile:\n"+
+					"          type: RuntimeDefault\n"+
+					"      containers:\n"+
+					"      - name: app\n"+
+					"        image: busybox:1.36\n"+
+					"        command: [\"/bin/sh\",\"-c\",\"sleep 3600\"]\n"+
+					"        securityContext:\n"+
+					"          readOnlyRootFilesystem: true\n"+
+					"          allowPrivilegeEscalation: false\n"+
+					"          runAsNonRoot: true\n"+
+					"          runAsUser: 1000\n"+
+					"          capabilities:\n"+
+					"            drop: [\"ALL\"]\n",
+				demoDeploymentName, namespace, originalReplicas,
+			)
+			deployFile := filepath.Join("/tmp", fmt.Sprintf("%s-deploy.yaml", demoDeploymentName))
+			Expect(os.WriteFile(deployFile, []byte(deployYAML), 0o644)).To(Succeed())
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+			cmd := exec.Command("kubectl", "apply", "-f", deployFile)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "failed to create demo deployment")
+
+			By("waiting for the Deployment to have 3 available replicas")
+			verifyDeploymentAvailable := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deploy", demoDeploymentName,
+					"-n", namespace, "-o", "jsonpath={.status.availableReplicas}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal(fmt.Sprintf("%d", originalReplicas)))
+			}
+			Eventually(verifyDeploymentAvailable, 5*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("creating a DeploymentFreezer that targets the demo Deployment with a short duration")
+			dfzYAML := fmt.Sprintf(
+				"apiVersion: apps.boolfixer.dev/v1alpha1\n"+
+					"kind: DeploymentFreezer\n"+
+					"metadata:\n"+
+					"  name: %s\n"+
+					"  namespace: %s\n"+
+					"spec:\n"+
+					"  targetRef:\n"+
+					"    name: %s\n"+
+					"  durationSeconds: %d\n",
+				freezerName, namespace, demoDeploymentName, freezeDurationSeconds,
+			)
+			dfzFile := filepath.Join("/tmp", fmt.Sprintf("%s-dfz.yaml", freezerName))
+			Expect(os.WriteFile(dfzFile, []byte(dfzYAML), 0o644)).To(Succeed())
+
+			cmd = exec.Command("kubectl", "apply", "-f", dfzFile)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "failed to create DeploymentFreezer")
+
+			By("waiting until the demo Deployment status converges to zero replicas")
+			verifyFrozen := func(g Gomega) {
+				// All status counters should be zero once fully frozen.
+				readField := func(path string) string {
+					cmd := exec.Command("kubectl", "get", "deploy", demoDeploymentName,
+						"-n", namespace, "-o", "jsonpath={"+path+"}")
+					out, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					val := strings.TrimSpace(out)
+					if val == "" {
+						return "0"
+					}
+					return val
+				}
+				replicas := readField(".status.replicas")
+				ready := readField(".status.readyReplicas")
+				available := readField(".status.availableReplicas")
+				updated := readField(".status.updatedReplicas")
+
+				g.Expect(replicas).To(Equal("0"))
+				g.Expect(ready).To(Equal("0"))
+				g.Expect(available).To(Equal("0"))
+				g.Expect(updated).To(Equal("0"))
+			}
+			Eventually(verifyFrozen, 5*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("waiting for the Deployment to be restored to 3 replicas (unfreeze completed)")
+			verifyUnfrozen := func(g Gomega) {
+				// Read and normalize fields from Deployment
+				readField := func(path string) string {
+					cmd := exec.Command("kubectl", "get", "deploy", demoDeploymentName,
+						"-n", namespace, "-o", "jsonpath={"+path+"}")
+					out, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					val := strings.TrimSpace(out)
+					if val == "" {
+						return "0"
+					}
+					return val
+				}
+
+				gen := readField(".metadata.generation")
+				obs := readField(".status.observedGeneration")
+				spec := readField(".spec.replicas")
+				avail := readField(".status.availableReplicas")
+
+				// Ensure the Deployment controller has observed the latest spec
+				g.Expect(obs).To(Equal(gen))
+
+				// Ensure desired and available replicas have converged to the original value
+				expected := fmt.Sprintf("%d", originalReplicas)
+				g.Expect(spec).To(Equal(expected))
+				g.Expect(avail).To(Equal(expected))
+			}
+			Eventually(verifyUnfrozen, 7*time.Minute, 10*time.Second).Should(Succeed())
+		})
 	})
 })
 

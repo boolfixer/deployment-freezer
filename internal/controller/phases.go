@@ -54,6 +54,7 @@ func (r *DeploymentFreezerReconciler) handlePendingOrFreezing(
 			fmt.Sprintf(msgOwnershipAcquiredFmt, dfz.Name, deploy.Namespace, deploy.Name),
 		)
 	} else {
+		// Ownership already held by this DFZ; nothing else to do in Pending.
 		setCondition(
 			dfz,
 			freezerv1alpha1.ConditionTypeOwnership,
@@ -63,13 +64,15 @@ func (r *DeploymentFreezerReconciler) handlePendingOrFreezing(
 		)
 	}
 
-	// Record original replicas once
+	// Record original replicas (prefer positive values; fall back to default)
+
 	if dfz.Status.OriginalReplicas == nil {
 		replicas := defaultReplicasCount
-		if deploy.Spec.Replicas != nil {
+		if deploy.Spec.Replicas != nil && *deploy.Spec.Replicas > 0 {
 			replicas = *deploy.Spec.Replicas
 		}
 		dfz.Status.OriginalReplicas = &replicas
+		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezingStarted, fmt.Sprintf("replicas calculated: %d", replicas))
 	}
 
 	// Scale to zero
@@ -156,7 +159,7 @@ func (r *DeploymentFreezerReconciler) handleFrozen(
 
 	setPhase(dfz, freezerv1alpha1.PhaseUnfreezing)
 	r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezingStarted, msgEvtUnfreezingStarted)
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueShort}, nil
 }
 
 // handleUnfreezing restores replicas and releases ownership.
@@ -165,12 +168,9 @@ func (r *DeploymentFreezerReconciler) handleUnfreezing(
 	dfz *freezerv1alpha1.DeploymentFreezer,
 	deploy *appsv1.Deployment,
 ) (ctrl.Result, error) {
-	targetReplicas := defaultReplicasCount
-	if deploy.Spec.Replicas != nil && *deploy.Spec.Replicas > 0 {
-		targetReplicas = *deploy.Spec.Replicas
-	} else if dfz.Status.OriginalReplicas != nil {
-		targetReplicas = *dfz.Status.OriginalReplicas
-	}
+	// Restore from the recorded original replicas; the current spec is 0 while frozen.
+	targetReplicas := *dfz.Status.OriginalReplicas
+	r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezeCompleted, fmt.Sprintf("replicas to restore: %d", targetReplicas))
 
 	if err := r.patchDeploymentReplicas(ctx, deploy, targetReplicas); err != nil {
 		setCondition(

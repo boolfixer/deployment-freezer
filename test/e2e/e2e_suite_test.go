@@ -78,9 +78,15 @@ var _ = BeforeSuite(func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
 		}
 	}
+
+	// Stream controller logs during e2e to GinkgoWriter
+	//startControllerLogStreamer()
 })
 
 var _ = AfterSuite(func() {
+	// Stop background controller log streaming
+	//stopControllerLogStreamer()
+
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")

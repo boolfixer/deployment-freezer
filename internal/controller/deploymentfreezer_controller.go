@@ -222,6 +222,8 @@ func (r *DeploymentFreezerReconciler) buildController(mgr ctrl.Manager, startupC
 		Watches(
 			&appsv1.Deployment{},
 			handler.EnqueueRequestsFromMapFunc(r.deploymentToDFZMapper),
+			// Only react to Deployment spec changes (generation changes), ignore status-only updates
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		// Watch a channel so we can push GenericEvents on startup
 		WatchesRawSource(source.Channel(startupCh, &handler.EnqueueRequestForObject{})).
