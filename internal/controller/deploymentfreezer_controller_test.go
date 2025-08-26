@@ -277,4 +277,267 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		Expect(get(types.NamespacedName{Namespace: ns, Name: deployName}, &curDep)).To(Succeed())
 		Expect(curDep.Annotations[annoFrozenBy]).To(Equal(otherOwner))
 	})
+
+	It("denies when spec.targetRef.name is empty", func() {
+		By("creating DFZ with empty targetRef.name")
+		dfz := makeDFZ(dfzName, "", 10)
+		err := k8sClient.Create(ctx, dfz)
+		Expect(err.Error()).To(Equal("DeploymentFreezer.apps.boolfixer.dev \"freeze-demo\" is invalid: spec.targetRef.name: Invalid value: \"\": spec.targetRef.name in body should be at least 1 chars long"))
+	})
+
+	It("stays Freezing while waiting for Deployment status to reach zero when spec is already zero", func() {
+		By("creating the target Deployment with spec=0 but status showing non-zero")
+		dep := makeDeployment(deployName, 0, nil)
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		// Simulate status not yet at zero
+		var d appsv1.Deployment
+		Expect(get(types.NamespacedName{Namespace: ns, Name: deployName}, &d)).To(Succeed())
+		d.Status.Replicas = 1
+		d.Status.ReadyReplicas = 1
+		d.Status.AvailableReplicas = 1
+		d.Status.UpdatedReplicas = 1
+		Expect(k8sClient.Status().Update(ctx, &d)).To(Succeed())
+
+		By("creating DFZ referencing the Deployment")
+		dfz := makeDFZ(dfzName, deployName, 10)
+		Expect(k8sClient.Create(ctx, dfz)).To(Succeed())
+
+		r := newReconciler(time.Now().UTC())
+
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		var curDFZ appsv1alpha1.DeploymentFreezer
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseFreezing))
+		// Ownership condition set first
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		// Freeze progress indicates waiting for status to catch up
+		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScalingDown))
+		Expect(curDFZ.Status.Conditions[1].Message).To(Equal(msgWaitingDeploymentReachZero))
+		// finalizer ensured
+		Expect(curDFZ.Finalizers).To(Equal([]string{"apps.boolfixer.dev/finalizer"}))
+	})
+
+	It("aborts when the Deployment is recreated with a different UID", func() {
+		By("creating the original Deployment")
+		dep := makeDeployment(deployName, 1, nil)
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		By("creating DFZ referencing the Deployment")
+		dfz := makeDFZ(dfzName, deployName, 10)
+		Expect(k8sClient.Create(ctx, dfz)).To(Succeed())
+
+		r := newReconciler(time.Now().UTC())
+
+		// First reconcile to record UID etc.
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		var curDFZ appsv1alpha1.DeploymentFreezer
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		// Phase and conditions after first reconcile
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseFreezing))
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
+		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(fmt.Sprintf(msgOwnershipAcquiredFmt, dfz.Name, dep.Namespace, dep.Name)))
+		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScalingDown))
+		Expect(curDFZ.Status.Conditions[1].Message).To(Equal(msgScalingDeploymentToZero))
+		Expect(curDFZ.Finalizers).To(Equal([]string{"apps.boolfixer.dev/finalizer"}))
+		Expect(curDFZ.Status.TargetRef.UID).NotTo(BeEmpty())
+
+		By("deleting the Deployment and creating a new one with the same name (different UID)")
+		Expect(k8sClient.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: deployName}})).To(Succeed())
+		Expect(k8sClient.Create(ctx, makeDeployment(deployName, 1, nil))).To(Succeed())
+
+		// Reconcile again should detect UID mismatch and abort
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseAborted))
+		// Previously set conditions are retained
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
+		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScalingDown))
+		// This TargetFound condition is appended after existing conditions
+		Expect(curDFZ.Status.Conditions[2].Type).To(Equal(appsv1alpha1.ConditionTypeTargetFound))
+		Expect(curDFZ.Status.Conditions[2].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[2].Reason).To(Equal(appsv1alpha1.ConditionReasonUIDMismatch))
+		Expect(curDFZ.Status.Conditions[2].Message).To(Equal(msgUIDRecreated))
+	})
+
+	It("aborts if ownership annotation is lost during Frozen phase", func() {
+		By("creating the target Deployment")
+		dep := makeDeployment(deployName, 1, nil)
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		By("creating DFZ referencing the Deployment with a future freeze window")
+		dfz := makeDFZ(dfzName, deployName, 60)
+		Expect(k8sClient.Create(ctx, dfz)).To(Succeed())
+
+		now := time.Now().UTC()
+		r := newReconciler(now)
+
+		// Drive to Frozen
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		var curDFZ appsv1alpha1.DeploymentFreezer
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		// After first reconcile
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseFreezing))
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
+		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScalingDown))
+		Expect(curDFZ.Status.Conditions[1].Message).To(Equal(msgScalingDeploymentToZero))
+		Expect(curDFZ.Finalizers).To(Equal([]string{"apps.boolfixer.dev/finalizer"}))
+
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseFrozen))
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
+		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(msgOwnershipAlreadyHeld))
+		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScaledToZero))
+		Expect(curDFZ.Status.Conditions[1].Message).To(Equal(msgDeploymentFullyScaledToZero))
+		Expect(curDFZ.Status.Conditions[2].Type).To(Equal(appsv1alpha1.ConditionTypeSpecChangedDuringFreeze))
+		Expect(curDFZ.Status.Conditions[2].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[2].Reason).To(Equal(appsv1alpha1.ConditionReasonObserved))
+		Expect(curDFZ.Status.Conditions[2].Message).To(Equal(msgSpecChangedDuringFreeze))
+
+		By("simulating ownership loss on the Deployment")
+		var curDep appsv1.Deployment
+		Expect(get(types.NamespacedName{Namespace: ns, Name: deployName}, &curDep)).To(Succeed())
+		if curDep.Annotations == nil {
+			curDep.Annotations = map[string]string{}
+		}
+		curDep.Annotations[annoFrozenBy] = otherOwner // overwrite with different owner
+		Expect(k8sClient.Update(ctx, &curDep)).To(Succeed())
+
+		// Reconcile should detect ownership lost and abort
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseAborted))
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonLost))
+		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(msgOwnershipAnnotationLost))
+	})
+
+	It("releases replicas and clears ownership on DFZ deletion", func() {
+		By("creating the target Deployment")
+		dep := makeDeployment(deployName, 2, nil)
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		By("creating DFZ referencing the Deployment")
+		dfz := makeDFZ(dfzName, deployName, 30)
+		Expect(k8sClient.Create(ctx, dfz)).To(Succeed())
+
+		r := newReconciler(time.Now().UTC())
+
+		// First reconcile to acquire ownership and begin freezing
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		var curDFZ appsv1alpha1.DeploymentFreezer
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseFreezing))
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
+		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(fmt.Sprintf(msgOwnershipAcquiredFmt, dfz.Name, dep.Namespace, dep.Name)))
+		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScalingDown))
+		Expect(curDFZ.Status.Conditions[1].Message).To(Equal(msgScalingDeploymentToZero))
+		Expect(curDFZ.Finalizers).To(Equal([]string{"apps.boolfixer.dev/finalizer"}))
+
+		By("deleting DFZ to trigger delete reconciliation path")
+		Expect(k8sClient.Delete(ctx, dfz)).To(Succeed())
+
+		// Run reconcile to process deletion (finalizer removal, best-effort restore and clear ownership)
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		// DFZ should be finalized and removed
+		err = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: dfzName}, &appsv1alpha1.DeploymentFreezer{})
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+		// Deployment should have replicas restored and ownership cleared
+		var curDep appsv1.Deployment
+		Expect(get(types.NamespacedName{Namespace: ns, Name: deployName}, &curDep)).To(Succeed())
+		Expect(curDep.Spec.Replicas).NotTo(BeNil())
+		Expect(*curDep.Spec.Replicas).To(Equal(int32(2)))
+		Expect(curDep.Annotations[annoFrozenBy]).To(BeEmpty())
+	})
+
+	It("moves to Aborted when target Deployment disappears mid-process", func() {
+		By("creating the target Deployment")
+		dep := makeDeployment(deployName, origReplicas, nil)
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		By("creating DFZ referencing the Deployment")
+		dfz := makeDFZ(dfzName, deployName, 10)
+		Expect(k8sClient.Create(ctx, dfz)).To(Succeed())
+
+		r := newReconciler(time.Now().UTC())
+
+		// First reconcile should set phase to Freezing (and set some conditions)
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		var curDFZ appsv1alpha1.DeploymentFreezer
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseFreezing))
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
+		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(fmt.Sprintf(msgOwnershipAcquiredFmt, dfz.Name, dep.Namespace, dep.Name)))
+		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScalingDown))
+		Expect(curDFZ.Status.Conditions[1].Message).To(Equal(msgScalingDeploymentToZero))
+		Expect(curDFZ.Finalizers).To(Equal([]string{"apps.boolfixer.dev/finalizer"}))
+
+		// Delete the Deployment before next reconcile
+		Expect(k8sClient.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: deployName}})).To(Succeed())
+		// Next reconcile: should set Phase Aborted and add TargetFound=false NotFound condition
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseAborted))
+		// Retain previous conditions and append TargetFound
+		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
+		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
+		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScalingDown))
+		Expect(curDFZ.Status.Conditions[2].Type).To(Equal(appsv1alpha1.ConditionTypeTargetFound))
+		Expect(curDFZ.Status.Conditions[2].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
+		Expect(curDFZ.Status.Conditions[2].Reason).To(Equal(appsv1alpha1.ConditionReasonNotFound))
+		Expect(curDFZ.Status.Conditions[2].Message).To(Equal(msgTargetDeploymentNotExist))
+	})
 })
