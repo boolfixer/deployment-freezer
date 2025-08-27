@@ -72,7 +72,11 @@ A simple “happy path” scenario:
 
 ---
 
-## 3. Space identification: what exactly we are doing
+## 3. State machine
+![k8-state-machine.svg](k8-state-machine.svg)
+---
+
+## 4. Space identification: what exactly we are doing
 
 We are lucky that Kubernetes architecture is already defined 😁  
 The core idea is **observation of CREATE / DELETE / EDIT actions** on Kubernetes objects stored in `etcd`.
@@ -84,7 +88,7 @@ The core idea is **observation of CREATE / DELETE / EDIT actions** on Kubernetes
 
 ---
 
-## 4. DeploymentFreezer CRD Specification
+## 5. DeploymentFreezer CRD Specification
 
 ### Resource Structure
 
@@ -156,7 +160,7 @@ status:
 
 ---
 
-## 5. Edge cases: Conditions Matrix
+## 6. Edge cases: Conditions Matrix
 
 So far only “happy path” was considered. Time for real fun - edge cases 😁:
 
