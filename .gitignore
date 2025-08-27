@@ -3,3 +3,5 @@
 bin/k8s
 bin/kustomize
 bin/kustomize-v5.6.0
+bin/controller-gen
+bin/controller-gen-v*
