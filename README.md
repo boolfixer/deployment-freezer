@@ -51,6 +51,11 @@ kubectl get deploy web -o yaml | grep '.spec.replicas'
 kubectl describe deploymentfreezer freeze-web
 ```
 
+### Step 5 - e2e tests:
+```bash
+make test-e2e
+```
+
 ---
 
 # Overview (big picture)
