@@ -68,7 +68,7 @@ func (r *DeploymentFreezerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	defer func() { _ = r.commitStatus(ctx, &dfz, st) }()
 
 	// Finalizer handling
-	if dfz.ObjectMeta.DeletionTimestamp.IsZero() {
+	if dfz.DeletionTimestamp.IsZero() {
 		if err := r.ensureFinalizer(ctx, &dfz); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -277,7 +277,7 @@ func (r *DeploymentFreezerReconciler) registerStartupRunnable(mgr ctrl.Manager, 
 			dfz := list.Items[i]
 			if dfz.Status.Phase == freezerv1alpha1.PhaseFrozen &&
 				dfz.Status.FreezeUntil != nil &&
-				!dfz.Status.FreezeUntil.Time.After(now) {
+				!dfz.Status.FreezeUntil.After(now) {
 				// Push a GenericEvent to enqueue this object immediately
 				// Important: pass a pointer to a distinct object per loop
 				obj := dfz // copy

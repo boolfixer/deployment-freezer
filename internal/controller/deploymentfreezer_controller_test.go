@@ -18,7 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	appsv1alpha1 "github.com/boolfixer/deployment-freezer/api/v1alpha1"
@@ -47,6 +47,7 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		return r
 	}
 
+	//nolint:unparam // keep the signature for readability and future flexibility
 	makeDeployment := func(name string, replicas int32, anno map[string]string) *appsv1.Deployment {
 		if anno == nil {
 			anno = map[string]string{}
@@ -60,7 +61,7 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 				Labels:      labels,
 			},
 			Spec: appsv1.DeploymentSpec{
-				Replicas: pointer.Int32(replicas),
+				Replicas: ptr.To(replicas),
 				Selector: &metav1.LabelSelector{
 					MatchLabels: labels,
 				},
@@ -79,6 +80,7 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		}
 	}
 
+	//nolint:unparam // keep the signature for readability and future flexibility
 	makeDFZ := func(name, target string, durationSeconds int64) *appsv1alpha1.DeploymentFreezer {
 		return &appsv1alpha1.DeploymentFreezer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -189,6 +191,7 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 
 		// 2) Second reconcile: Frozen phase
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
+		Expect(err).NotTo(HaveOccurred())
 		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
 		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseFrozen))
 		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))

@@ -10,13 +10,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-// fieldManager is used for server-side apply operations to own the specific fields we manage.
-const fieldManager = "deployment-freezer-controller"
 
 // patchDeploymentReplicas sets .spec.replicas using a MergeFrom patch with retry on conflict.
 func (r *DeploymentFreezerReconciler) patchDeploymentReplicas(
@@ -31,7 +28,7 @@ func (r *DeploymentFreezerReconciler) patchDeploymentReplicas(
 			return err
 		}
 		orig := latest.DeepCopy()
-		latest.Spec.Replicas = pointer.Int32(replicas)
+		latest.Spec.Replicas = ptr.To(replicas)
 		return r.Patch(ctx, &latest, client.MergeFrom(orig))
 	})
 }
@@ -151,6 +148,7 @@ func (r *DeploymentFreezerReconciler) ensureTemplateHashAnno(
 	return nil
 }
 
+//nolint:unparam // keep (Result, error) signature for consistency and future flexibility
 func (r *DeploymentFreezerReconciler) reconcileDelete(
 	ctx context.Context,
 	dfz *freezerv1alpha1.DeploymentFreezer,

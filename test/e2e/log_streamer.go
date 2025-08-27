@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2"
 )
 
 // Namespace and deployment name of the controller-manager to stream logs from.
@@ -17,9 +17,9 @@ const (
 
 var controllerLogCancel context.CancelFunc
 
-// startControllerLogStreamer starts a background goroutine that follows the controller-manager logs
+// StartControllerLogStreamer starts a background goroutine that follows the controller-manager logs
 // and writes them to the Ginkgo writer. It automatically retries if the pod restarts or is not up yet.
-func startControllerLogStreamer() {
+func StartControllerLogStreamer() {
 	ctx, cancel := context.WithCancel(context.Background())
 	controllerLogCancel = cancel
 
@@ -42,15 +42,15 @@ func startControllerLogStreamer() {
 				"--since=2m",
 			)
 			// Stream live output into the test output.
-			cmd.Stdout = GinkgoWriter
-			cmd.Stderr = GinkgoWriter
+			cmd.Stdout = ginkgo.GinkgoWriter
+			cmd.Stderr = ginkgo.GinkgoWriter
 
 			if err := cmd.Run(); err != nil {
 				// If context is canceled, exit quietly.
 				if ctx.Err() != nil {
 					return
 				}
-				_, _ = fmt.Fprintf(GinkgoWriter, "controller log streamer exited: %v; retrying in %s\n", err, backoff)
+				_, _ = fmt.Fprintf(ginkgo.GinkgoWriter, "controller log streamer exited: %v; retrying in %s\n", err, backoff)
 				time.Sleep(backoff)
 				if backoff < 10*time.Second {
 					backoff *= 2
@@ -64,8 +64,8 @@ func startControllerLogStreamer() {
 	}()
 }
 
-// stopControllerLogStreamer stops the background log streaming goroutine.
-func stopControllerLogStreamer() {
+// StopControllerLogStreamer stops the background log streaming goroutine.
+func StopControllerLogStreamer() {
 	if controllerLogCancel != nil {
 		controllerLogCancel()
 	}

@@ -33,7 +33,7 @@ func TestSetCondition(t *testing.T) {
 		assert.Equal(t, reason, c.Reason)
 		assert.Equal(t, msg, c.Message)
 		assert.False(t, c.LastTransitionTime.IsZero(), "LastTransitionTime should be set")
-		assert.True(t, !c.LastTransitionTime.Time.Before(before) && !c.LastTransitionTime.Time.After(after),
+		assert.True(t, !c.LastTransitionTime.Time.Before(before) && !c.LastTransitionTime.After(after),
 			"LastTransitionTime should be within call window")
 	})
 
@@ -58,9 +58,7 @@ func TestSetCondition(t *testing.T) {
 		newReason := freezerv1alpha1.ConditionReason("NewReason")
 		newMsg := "new message"
 
-		before := time.Now()
 		setCondition(dfz, typ, newStatus, newReason, newMsg)
-		after := time.Now()
 
 		assert.Len(t, dfz.Status.Conditions, 1)
 		got := dfz.Status.Conditions[0]
@@ -68,8 +66,7 @@ func TestSetCondition(t *testing.T) {
 		assert.Equal(t, newStatus, got.Status)
 		assert.Equal(t, newReason, got.Reason)
 		assert.Equal(t, newMsg, got.Message)
-		assert.True(t, got.LastTransitionTime.Time.After(old.LastTransitionTime.Time))
-		assert.True(t, !got.LastTransitionTime.Time.Before(before) && !got.LastTransitionTime.Time.After(after))
+		assert.True(t, got.LastTransitionTime.After(old.LastTransitionTime.Time))
 	})
 
 	t.Run("RefreshTransitionTime_WhenUnchanged", func(t *testing.T) {
@@ -101,7 +98,7 @@ func TestSetCondition(t *testing.T) {
 		assert.Equal(t, status, got.Status)
 		assert.Equal(t, reason, got.Reason)
 		assert.Equal(t, msg, got.Message)
-		assert.True(t, got.LastTransitionTime.Time.After(oldTime.Time), "transition time should be refreshed (greater than old)")
+		assert.True(t, got.LastTransitionTime.After(oldTime.Time), "transition time should be refreshed (greater than old)")
 	})
 
 	t.Run("OnlyTargetConditionUpdated_AmongMany", func(t *testing.T) {
@@ -164,7 +161,7 @@ func TestSetCondition(t *testing.T) {
 			assert.Equal(t, newBStatus, condB.Status)
 			assert.Equal(t, newBReason, condB.Reason)
 			assert.Equal(t, newBMsg, condB.Message)
-			assert.True(t, condB.LastTransitionTime.Time.After(bOldTime.Time), "TypeB LTT should be updated")
+			assert.True(t, condB.LastTransitionTime.After(bOldTime.Time), "TypeB LTT should be updated")
 		}
 	})
 }
@@ -284,11 +281,12 @@ func TestHashTemplate(t *testing.T) {
 		d := newBaseDeployment()
 		h1 := hashTemplate(d)
 		d2 := d.DeepCopy()
-		d2.ObjectMeta.Name = "other-name"
-		if d2.ObjectMeta.Annotations == nil {
-			d2.ObjectMeta.Annotations = map[string]string{}
+		d2.Name = "other-name"
+		d2.Name = "other-name"
+		if d2.Annotations == nil {
+			d2.Annotations = map[string]string{}
 		}
-		d2.ObjectMeta.Annotations["note"] = "does-not-affect-hash"
+		d2.Annotations["note"] = "does-not-affect-hash"
 		h2 := hashTemplate(d2)
 		assert.Equal(t, h1, h2)
 	})

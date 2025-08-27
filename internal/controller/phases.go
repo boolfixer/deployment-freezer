@@ -13,6 +13,8 @@ import (
 )
 
 // handlePendingOrFreezing acquires ownership and scales down to zero.
+//
+//nolint:unparam // error result is currently always nil; keep signature for symmetry
 func (r *DeploymentFreezerReconciler) handlePendingOrFreezing(
 	ctx context.Context,
 	dfz *freezerv1alpha1.DeploymentFreezer,
@@ -133,8 +135,10 @@ func (r *DeploymentFreezerReconciler) handlePendingOrFreezing(
 }
 
 // handleFrozen enforces ownership while waiting for unfreeze time.
+//
+//nolint:unparam // error result is currently always nil; keep signature for symmetry
 func (r *DeploymentFreezerReconciler) handleFrozen(
-	ctx context.Context,
+	_ context.Context,
 	dfz *freezerv1alpha1.DeploymentFreezer,
 	deploy *appsv1.Deployment,
 ) (ctrl.Result, error) {
@@ -163,6 +167,8 @@ func (r *DeploymentFreezerReconciler) handleFrozen(
 }
 
 // handleUnfreezing restores replicas and releases ownership.
+//
+//nolint:unparam // error result is currently always nil; keep signature for symmetry
 func (r *DeploymentFreezerReconciler) handleUnfreezing(
 	ctx context.Context,
 	dfz *freezerv1alpha1.DeploymentFreezer,

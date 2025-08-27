@@ -64,9 +64,15 @@ func setCondition(
 func hashTemplate(d *appsv1.Deployment) string {
 	h := sha256.New()
 	// Hash the bits of spec that imply rollout: pod template and strategy
-	fmt.Fprintf(h, "%v", d.Spec.Template.Spec)
-	fmt.Fprintf(h, "%v", d.Spec.Template.Labels)
-	fmt.Fprintf(h, "%v", d.Spec.Strategy)
+	if _, err := fmt.Fprintf(h, "%v", d.Spec.Template.Spec); err != nil {
+		return ""
+	}
+	if _, err := fmt.Fprintf(h, "%v", d.Spec.Template.Labels); err != nil {
+		return ""
+	}
+	if _, err := fmt.Fprintf(h, "%v", d.Spec.Strategy); err != nil {
+		return ""
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 

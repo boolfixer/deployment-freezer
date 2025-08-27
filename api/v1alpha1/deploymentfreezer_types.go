@@ -50,10 +50,6 @@ const (
 	PhaseAborted    Phase = "Aborted"
 )
 
-// +kubebuilder:validation:Enum=Pending;Freezing;Frozen;Unfreezing;Completed;Denied;Aborted
-// Phase summarises the lifecycle of a DeploymentFreezer.
-type _PhaseEnumValidationHolder struct{}
-
 type ConditionType string
 
 const (
@@ -65,9 +61,6 @@ const (
 	ConditionTypeSpecChangedDuringFreeze ConditionType = "SpecChangedDuringFreeze"
 )
 
-// +kubebuilder:validation:Enum=TargetFound;Ownership;FreezeProgress;UnfreezeProgress;Health;SpecChangedDuringFreeze
-type _ConditionTypeEnumValidationHolder struct{}
-
 type ConditionStatus string
 
 const (
@@ -75,9 +68,6 @@ const (
 	ConditionStatusFalse   ConditionStatus = "False"
 	ConditionStatusUnknown ConditionStatus = "Unknown"
 )
-
-// +kubebuilder:validation:Enum=True;False;Unknown
-type _ConditionStatusEnumValidationHolder struct{}
 
 type ConditionReason string
 
@@ -113,9 +103,6 @@ const (
 	// SpecChangedDuringFreeze reasons
 	ConditionReasonObserved ConditionReason = "Observed"
 )
-
-// +kubebuilder:validation:Enum=Found;NotFound;UIDMismatch;Acquired;DeniedAlreadyFrozen;Lost;Released;ScalingDown;ScaledToZero;AwaitingPDB;ScalingUp;ScaledUp;QuotaExceeded;PartialRestore;Normal;Degraded;APIConflict;RBACDenied;Observed
-type _ConditionReasonEnumValidationHolder struct{}
 
 type StatusTargetRef struct {
 	// Cached name of the target Deployment.

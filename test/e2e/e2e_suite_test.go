@@ -80,12 +80,12 @@ var _ = BeforeSuite(func() {
 	}
 
 	// Stream controller logs during e2e to GinkgoWriter
-	//startControllerLogStreamer()
+	// StartControllerLogStreamer()
 })
 
 var _ = AfterSuite(func() {
 	// Stop background controller log streaming
-	//stopControllerLogStreamer()
+	// StopControllerLogStreamer()
 
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
