@@ -1,0 +1,9 @@
+apiVersion: apps.boolfixer.dev/v1alpha1
+kind: DeploymentFreezer
+metadata:
+  name: freeze-web
+  namespace: default
+spec:
+  targetRef:
+    name: web                 # Deployment name in the same namespace
+  durationSeconds: 10

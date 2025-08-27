@@ -1,16 +1,59 @@
-# Requirements:
+# 🚀 Quickstart
 
-- Go ≥ 1.22 
-- Docker 
-- kubectl 
-- kind 
-- make
+### Prerequisites
 
-# Overview (big picture)
-
-High-level overview of how it should work.
+- [Go](https://go.dev/dl/) **≥ 1.24**
+- [Docker](https://docs.docker.com/get-docker/)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [kind](https://kind.sigs.k8s.io/docs/user/quick-start/) (for local clusters)
+- [make](https://www.gnu.org/software/make/)
 
 ---
+
+### Step 1 — Create a test cluster & install CRD
+
+```bash
+# Ensure no leftovers from a previous run
+kind delete cluster --name df || true
+
+kind create cluster --name df
+make install    # applies the DeploymentFreezer CRD
+```
+
+
+### Step 2 — Run the controller
+```bash
+make run
+```
+
+### Step 3 — Deploy a sample workload & freezer CR
+```bash
+# Clean up from previous runs (safe if first run)
+kubectl delete -f examples/deploymentfreezer-freeze-10s.yaml --ignore-not-found
+kubectl delete -f examples/deployment.yaml --ignore-not-found
+
+kubectl apply -f examples/deployment.yaml
+kubectl apply -f examples/deploymentfreezer-freeze-10s.yaml
+```
+
+### Step 4 — Verify behavior
+```bash
+# Immediately after applying: Deployment should be frozen (scaled to 0)
+kubectl get deploymentfreezers
+kubectl describe deploymentfreezer freeze-web
+kubectl get deploy web -o yaml | grep '.spec.replicas'
+
+# Wait ~15 seconds for automatic unfreeze
+sleep 15
+
+# After 15 seconds: replicas should be restored to original value
+kubectl get deploy web -o yaml | grep '.spec.replicas'
+kubectl describe deploymentfreezer freeze-web
+```
+
+---
+
+# Overview (big picture)
 
 ## 1. Components diagram
 A static view of the main Kubernetes actors and how they interact.
