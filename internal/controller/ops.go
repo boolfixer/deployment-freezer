@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -21,10 +20,9 @@ func (r *DeploymentFreezerReconciler) patchDeploymentReplicas(
 	d *appsv1.Deployment,
 	replicas int32,
 ) error {
-	nn := types.NamespacedName{Namespace: d.Namespace, Name: d.Name}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest appsv1.Deployment
-		if err := r.Get(ctx, nn, &latest); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: d.Namespace, Name: d.Name}, &latest); err != nil {
 			return err
 		}
 		orig := latest.DeepCopy()
@@ -66,14 +64,10 @@ func (r *DeploymentFreezerReconciler) ensureFinalizer(
 	if slices.Contains(dfz.Finalizers, finalizerName) {
 		return nil
 	}
-	nn := types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Name}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest freezerv1alpha1.DeploymentFreezer
-		if err := r.Get(ctx, nn, &latest); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Name}, &latest); err != nil {
 			return err
-		}
-		if slices.Contains(latest.Finalizers, finalizerName) {
-			return nil
 		}
 		orig := latest.DeepCopy()
 		latest.Finalizers = append(latest.Finalizers, finalizerName)
@@ -89,14 +83,10 @@ func (r *DeploymentFreezerReconciler) removeFinalizer(
 	if !slices.Contains(dfz.Finalizers, finalizerName) {
 		return nil
 	}
-	nn := types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Name}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest freezerv1alpha1.DeploymentFreezer
-		if err := r.Get(ctx, nn, &latest); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Name}, &latest); err != nil {
 			return err
-		}
-		if !slices.Contains(latest.Finalizers, finalizerName) {
-			return nil
 		}
 		orig := latest.DeepCopy()
 		latest.Finalizers = removeString(latest.Finalizers, finalizerName)
@@ -117,10 +107,9 @@ func (r *DeploymentFreezerReconciler) ensureTemplateHashAnno(
 		prevHash = dfz.Annotations[annoTemplateHash]
 	}
 	if prevHash == "" {
-		nn := types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Name}
 		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			var latest freezerv1alpha1.DeploymentFreezer
-			if err := r.Get(ctx, nn, &latest); err != nil {
+			if err := r.Get(ctx, types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Name}, &latest); err != nil {
 				return err
 			}
 			if latest.Annotations == nil {
@@ -148,54 +137,33 @@ func (r *DeploymentFreezerReconciler) ensureTemplateHashAnno(
 	return nil
 }
 
-//nolint:unparam // keep (Result, error) signature for consistency and future flexibility
 func (r *DeploymentFreezerReconciler) reconcileDelete(
 	ctx context.Context,
+	deployment *appsv1.Deployment,
 	dfz *freezerv1alpha1.DeploymentFreezer,
-) (ctrl.Result, error) {
-	// Best-effort release: if we still own the Deployment, try to remove annotation and restore replicas.
-	var deploy appsv1.Deployment
-	if dfz.Spec.TargetRef.Name == "" {
-		// Nothing to release
-		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonReleaseSkippedNoTarget, msgEvtReleaseSkippedNoTarget)
-		return ctrl.Result{}, nil
-	}
-	err := r.Get(ctx, types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Spec.TargetRef.Name}, &deploy)
-	if err != nil {
-		// If not found, inform and exit quietly
-		if client.IgnoreNotFound(err) == nil {
-			r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonReleaseSkippedNotFound, msgEvtReleaseSkippedNotFound, dfz.Namespace, dfz.Spec.TargetRef.Name)
-			return ctrl.Result{}, nil
-		}
-		// Other errors: surface and let controller retry
-		return ctrl.Result{}, err
-	}
-
+) {
 	owner := fmt.Sprintf("%s/%s", dfz.Namespace, dfz.Name)
-	if deploy.Annotations[annoFrozenBy] != owner {
+	if deployment.Annotations[annoFrozenBy] != owner {
 		// We are not the owner anymore; nothing to do.
-		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonReleaseSkippedNotOwner, msgEvtReleaseSkippedNotOwner, owner)
-		return ctrl.Result{}, nil
+		r.Recorder.Eventf(dfz, corev1.EventTypeWarning, ReasonSkippedNotOwner, msgSkippedNotOwner, owner)
+		return
 	}
 
-	// Restore replicas (best-effort)
+	// Restore replicas
 	replicas := defaultReplicasCount
 	if dfz.Status.OriginalReplicas != nil {
 		replicas = *dfz.Status.OriginalReplicas
 	}
-	if err := r.patchDeploymentReplicas(ctx, &deploy, replicas); err != nil {
-		r.Recorder.Eventf(dfz, corev1.EventTypeWarning, ReasonReleaseRestoreFailed, msgEvtReleaseRestoreFailed, replicas, err)
+	if err := r.patchDeploymentReplicas(ctx, deployment, replicas); err != nil {
+		r.Recorder.Eventf(dfz, corev1.EventTypeWarning, ReasonRestoreFailed, msgReplicasRestoreFailed, replicas, err)
 	} else {
-		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonReleaseRestored, msgEvtReleaseRestored, replicas)
+		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonRestored, msgReplicasRestored, replicas)
 	}
 
-	// Clear ownership annotation (best-effort)
-	if err := r.patchDeploymentAnno(ctx, &deploy, annoFrozenBy, ""); err != nil {
-		r.Recorder.Eventf(dfz, corev1.EventTypeWarning, ReasonReleaseClearOwnershipFailed, msgEvtReleaseClearOwnershipFailed, err)
+	// Clear ownership annotation
+	if err := r.patchDeploymentAnno(ctx, deployment, annoFrozenBy, ""); err != nil {
+		r.Recorder.Eventf(dfz, corev1.EventTypeWarning, ReasonClearOwnershipFailed, msgClearOwnershipFailed, err)
 	} else {
-		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonReleaseOwnershipCleared, msgEvtReleaseOwnershipCleared, deploy.Namespace, deploy.Name)
+		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonOwnershipCleared, msgOwnershipCleared, deployment.Namespace, deployment.Name)
 	}
-
-	// No status updates on delete path
-	return ctrl.Result{}, nil
 }

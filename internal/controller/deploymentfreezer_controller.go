@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	freezerv1alpha1 "github.com/boolfixer/deployment-freezer/api/v1alpha1"
@@ -54,38 +55,17 @@ func (r *DeploymentFreezerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	lg := log.FromContext(ctx).WithValues("dfz", req.NamespacedName)
 	ctx = log.IntoContext(ctx, lg)
 
-	// Load DFZ
 	var dfz freezerv1alpha1.DeploymentFreezer
 	if err := r.Get(ctx, req.NamespacedName, &dfz); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Track status changes and write once at the end
 	st := newStatusTracker(&dfz)
-	defer func() { _ = r.commitStatus(ctx, &dfz, st) }()
+	defer func() { r.commitStatus(ctx, &dfz, st) }()
 
-	// Finalizer handling
-	if dfz.DeletionTimestamp.IsZero() {
-		if err := r.ensureFinalizer(ctx, &dfz); err != nil {
-			return ctrl.Result{}, err
-		}
-	} else {
-		// Deletion: best-effort release and remove finalizer
-		if res, err := r.reconcileDelete(ctx, &dfz); err != nil || !res.IsZero() {
-			return res, err
-		}
-		if err := r.removeFinalizer(ctx, &dfz); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Validate target
-	targetName := dfz.Spec.TargetRef.Name
-	if targetName == "" {
+	deploymentName := dfz.Spec.TargetRef.Name
+	if deploymentName == "" {
 		setPhase(&dfz, freezerv1alpha1.PhaseDenied)
 		setCondition(
 			&dfz,
@@ -97,11 +77,10 @@ func (r *DeploymentFreezerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	// Fetch the target Deployment
-	var deploy appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Namespace: dfz.Namespace, Name: targetName}, &deploy); err != nil {
+	var deployment appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Namespace: dfz.Namespace, Name: deploymentName}, &deployment); err != nil {
 		if apierrors.IsNotFound(err) {
-			setPhase(&dfz, phaseForNotFound(&dfz))
+			setPhase(&dfz, freezerv1alpha1.PhaseAborted)
 			setCondition(
 				&dfz,
 				freezerv1alpha1.ConditionTypeTargetFound,
@@ -109,7 +88,7 @@ func (r *DeploymentFreezerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 				freezerv1alpha1.ConditionReasonNotFound,
 				msgTargetDeploymentNotExist,
 			)
-			return ctrl.Result{RequeueAfter: requeueMedium}, nil
+			return ctrl.Result{}, nil
 		}
 		setCondition(
 			&dfz,
@@ -121,8 +100,28 @@ func (r *DeploymentFreezerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{RequeueAfter: requeueShort}, nil
 	}
 
+	if deployment.Annotations == nil {
+		deployment.Annotations = map[string]string{}
+	}
+
+	owner := fmt.Sprintf("%s/%s", dfz.Namespace, dfz.Name)
+	frozenBy, ok := deployment.Annotations[annoFrozenBy]
+	if ok && frozenBy != owner {
+		setPhase(&dfz, freezerv1alpha1.PhaseDenied)
+		setCondition(
+			&dfz,
+			freezerv1alpha1.ConditionTypeOwnership,
+			freezerv1alpha1.ConditionStatusFalse,
+			freezerv1alpha1.ConditionReasonLost,
+			fmt.Sprintf(msgDeploymentAlreadyOwnedFmt, frozenBy),
+		)
+		r.Recorder.Eventf(&dfz, corev1.EventTypeWarning, ReasonOwnershipDenied, msgOwnershipDenied, deployment.Namespace, deployment.Name, frozenBy)
+		return ctrl.Result{}, nil
+	}
+
 	// UID pinning / recreation detection
-	if dfz.Status.TargetRef.UID != "" && deploy.UID != dfz.Status.TargetRef.UID {
+	if dfz.Status.TargetRef.UID != "" && deployment.UID != dfz.Status.TargetRef.UID {
+		setPhase(&dfz, freezerv1alpha1.PhaseAborted)
 		setCondition(
 			&dfz,
 			freezerv1alpha1.ConditionTypeTargetFound,
@@ -130,18 +129,28 @@ func (r *DeploymentFreezerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			freezerv1alpha1.ConditionReasonUIDMismatch,
 			msgUIDRecreated,
 		)
-		setPhase(&dfz, freezerv1alpha1.PhaseAborted)
 		return ctrl.Result{}, nil
+	}
+
+	// Finalizer handling
+	if dfz.DeletionTimestamp.IsZero() {
+		if err := r.ensureFinalizer(ctx, &dfz); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		r.reconcileDelete(ctx, &deployment, &dfz)
+		err := r.removeFinalizer(ctx, &dfz)
+		return ctrl.Result{}, err
 	}
 
 	// Cache UID/name into status if not set
 	if dfz.Status.TargetRef.UID == "" {
-		dfz.Status.TargetRef.Name = deploy.Name
-		dfz.Status.TargetRef.UID = deploy.UID
+		dfz.Status.TargetRef.Name = deployment.Name
+		dfz.Status.TargetRef.UID = deployment.UID
 	}
 
 	// Compute/remember template hash to detect spec changes while frozen
-	if err := r.ensureTemplateHashAnno(ctx, &dfz, &deploy); err != nil {
+	if err := r.ensureTemplateHashAnno(ctx, &dfz, &deployment); err != nil {
 		setCondition(
 			&dfz,
 			freezerv1alpha1.ConditionTypeHealth,
@@ -164,11 +173,11 @@ func (r *DeploymentFreezerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	switch dfz.Status.Phase {
 	case freezerv1alpha1.PhasePending, freezerv1alpha1.PhaseFreezing:
-		return r.handlePendingOrFreezing(ctx, &dfz, &deploy)
+		return r.handlePendingOrFreezing(ctx, &dfz, &deployment)
 	case freezerv1alpha1.PhaseFrozen:
-		return r.handleFrozen(ctx, &dfz, &deploy)
+		return r.handleFrozen(&dfz), nil
 	case freezerv1alpha1.PhaseUnfreezing:
-		return r.handleUnfreezing(ctx, &dfz, &deploy)
+		return r.handleUnfreezing(ctx, &dfz, &deployment)
 	case freezerv1alpha1.PhaseDenied, freezerv1alpha1.PhaseCompleted, freezerv1alpha1.PhaseAborted:
 		return ctrl.Result{}, nil
 	default:

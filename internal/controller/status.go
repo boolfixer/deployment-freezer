@@ -7,6 +7,7 @@ import (
 	freezerv1alpha1 "github.com/boolfixer/deployment-freezer/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -23,22 +24,20 @@ func (r *DeploymentFreezerReconciler) commitStatus(
 	ctx context.Context,
 	dfz *freezerv1alpha1.DeploymentFreezer,
 	st statusTracker,
-) error {
+) {
 	if reflect.DeepEqual(st.orig, dfz.Status) {
-		return nil
+		return
 	}
-	lg := log.FromContext(ctx)
-
 	err := retry.OnError(retry.DefaultRetry, func(err error) bool { return true }, func() error {
 		var latest freezerv1alpha1.DeploymentFreezer
-		if getErr := r.Get(ctx, types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Name}, &latest); getErr != nil {
-			return getErr
+		if err := r.Get(ctx, types.NamespacedName{Namespace: dfz.Namespace, Name: dfz.Name}, &latest); err != nil {
+			return err
 		}
+		orig := latest.DeepCopy()
 		latest.Status = dfz.Status
-		return r.Status().Update(ctx, &latest)
+		return r.Status().Patch(ctx, &latest, client.MergeFrom(orig))
 	})
 	if err != nil {
-		lg.Error(err, "failed to update status")
+		log.FromContext(ctx).Error(err, "failed to update status")
 	}
-	return err
 }

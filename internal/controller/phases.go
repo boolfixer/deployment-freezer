@@ -21,23 +21,7 @@ func (r *DeploymentFreezerReconciler) handlePendingOrFreezing(
 	deploy *appsv1.Deployment,
 ) (ctrl.Result, error) {
 	owner := fmt.Sprintf("%s/%s", dfz.Namespace, dfz.Name)
-	frozenBy := deploy.Annotations[annoFrozenBy]
-
-	// Try to acquire ownership
-	if frozenBy != "" && frozenBy != owner {
-		setCondition(
-			dfz,
-			freezerv1alpha1.ConditionTypeOwnership,
-			freezerv1alpha1.ConditionStatusFalse,
-			freezerv1alpha1.ConditionReasonDeniedAlreadyFrozen,
-			fmt.Sprintf(msgDeploymentAlreadyOwnedFmt, frozenBy),
-		)
-		setPhase(dfz, freezerv1alpha1.PhaseDenied)
-		r.Recorder.Eventf(dfz, corev1.EventTypeWarning, ReasonOwnershipDenied, msgEvtOwnershipDenied, deploy.Namespace, deploy.Name, frozenBy)
-		return ctrl.Result{}, nil
-	}
-
-	if frozenBy != owner {
+	if _, ok := deploy.Annotations[annoFrozenBy]; !ok {
 		if err := r.patchDeploymentAnno(ctx, deploy, annoFrozenBy, owner); err != nil {
 			setCondition(
 				dfz,
@@ -55,26 +39,15 @@ func (r *DeploymentFreezerReconciler) handlePendingOrFreezing(
 			freezerv1alpha1.ConditionReasonAcquired,
 			fmt.Sprintf(msgOwnershipAcquiredFmt, dfz.Name, deploy.Namespace, deploy.Name),
 		)
-	} else {
-		// Ownership already held by this DFZ; nothing else to do in Pending.
-		setCondition(
-			dfz,
-			freezerv1alpha1.ConditionTypeOwnership,
-			freezerv1alpha1.ConditionStatusTrue,
-			freezerv1alpha1.ConditionReasonAcquired,
-			msgOwnershipAlreadyHeld,
-		)
 	}
 
 	// Record original replicas (prefer positive values; fall back to default)
-
 	if dfz.Status.OriginalReplicas == nil {
 		replicas := defaultReplicasCount
 		if deploy.Spec.Replicas != nil && *deploy.Spec.Replicas > 0 {
 			replicas = *deploy.Spec.Replicas
 		}
 		dfz.Status.OriginalReplicas = &replicas
-		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezingStarted, fmt.Sprintf("replicas calculated: %d", replicas))
 	}
 
 	// Scale to zero
@@ -118,7 +91,7 @@ func (r *DeploymentFreezerReconciler) handlePendingOrFreezing(
 		t := metav1.NewTime(until)
 		dfz.Status.FreezeUntil = &t
 
-		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonFrozen, msgEvtFrozenUntil, until.UTC().Format(time.RFC3339))
+		r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonFrozen, msgFrozenUntil, until.UTC().Format(time.RFC3339))
 		return ctrl.Result{RequeueAfter: time.Until(until)}, nil
 	}
 
@@ -134,36 +107,16 @@ func (r *DeploymentFreezerReconciler) handlePendingOrFreezing(
 	return ctrl.Result{RequeueAfter: requeueShort}, nil
 }
 
-// handleFrozen enforces ownership while waiting for unfreeze time.
-//
-//nolint:unparam // error result is currently always nil; keep signature for symmetry
-func (r *DeploymentFreezerReconciler) handleFrozen(
-	_ context.Context,
-	dfz *freezerv1alpha1.DeploymentFreezer,
-	deploy *appsv1.Deployment,
-) (ctrl.Result, error) {
-	owner := fmt.Sprintf("%s/%s", dfz.Namespace, dfz.Name)
-	frozenBy := deploy.Annotations[annoFrozenBy]
-	if frozenBy != owner {
-		setCondition(
-			dfz,
-			freezerv1alpha1.ConditionTypeOwnership,
-			freezerv1alpha1.ConditionStatusFalse,
-			freezerv1alpha1.ConditionReasonLost,
-			msgOwnershipAnnotationLost,
-		)
-		setPhase(dfz, freezerv1alpha1.PhaseAborted)
-		r.Recorder.Eventf(dfz, corev1.EventTypeWarning, ReasonOwnershipLost, msgEvtOwnershipLost, deploy.Namespace, deploy.Name)
-		return ctrl.Result{}, nil
-	}
-
-	if r.now().Before(dfz.Status.FreezeUntil.Time) {
-		return ctrl.Result{RequeueAfter: time.Until(dfz.Status.FreezeUntil.Time)}, nil
+// handleFrozen waits until unfreeze time; keeps the resource in Frozen phase until time elapses.
+func (r *DeploymentFreezerReconciler) handleFrozen(dfz *freezerv1alpha1.DeploymentFreezer) ctrl.Result {
+	// Be defensive: FreezeUntil should be set once the Deployment is fully scaled to zero.
+	if dfz.Status.FreezeUntil != nil && r.now().Before(dfz.Status.FreezeUntil.Time) {
+		return ctrl.Result{RequeueAfter: time.Until(dfz.Status.FreezeUntil.Time)}
 	}
 
 	setPhase(dfz, freezerv1alpha1.PhaseUnfreezing)
-	r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezingStarted, msgEvtUnfreezingStarted)
-	return ctrl.Result{RequeueAfter: requeueShort}, nil
+	r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezingStarted, msgUnfreezingStarted)
+	return ctrl.Result{RequeueAfter: requeueShort}
 }
 
 // handleUnfreezing restores replicas and releases ownership.
@@ -176,8 +129,6 @@ func (r *DeploymentFreezerReconciler) handleUnfreezing(
 ) (ctrl.Result, error) {
 	// Restore from the recorded original replicas; the current spec is 0 while frozen.
 	targetReplicas := *dfz.Status.OriginalReplicas
-	r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezeCompleted, fmt.Sprintf("replicas to restore: %d", targetReplicas))
-
 	if err := r.patchDeploymentReplicas(ctx, deploy, targetReplicas); err != nil {
 		setCondition(
 			dfz,
@@ -214,7 +165,7 @@ func (r *DeploymentFreezerReconciler) handleUnfreezing(
 		msgOwnershipReleasedAfterUnfreeze,
 	)
 	setPhase(dfz, freezerv1alpha1.PhaseCompleted)
-	r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezeCompleted, msgEvtUnfreezeCompleted, targetReplicas)
+	r.Recorder.Eventf(dfz, corev1.EventTypeNormal, ReasonUnfreezeCompleted, msgUnfreezeCompleted, targetReplicas)
 
 	return ctrl.Result{}, nil
 }

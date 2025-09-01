@@ -134,7 +134,7 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		}, 10*time.Second, 100*time.Millisecond).Should(BeTrue())
 	})
 
-	It("sets TargetFound=false and Phase=Pending when target Deployment does not exist", func() {
+	It("sets TargetFound=false and Phase=Aborted when target Deployment does not exist", func() {
 		By("creating DFZ that references a missing Deployment")
 		dfz := makeDFZ(dfzName, "does-not-exist", 5)
 		Expect(k8sClient.Create(ctx, dfz)).To(Succeed())
@@ -147,14 +147,11 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		// Verify status updated
 		var refreshed appsv1alpha1.DeploymentFreezer
 		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &refreshed)).To(Succeed())
-		Expect(refreshed.Status.Phase).To(Equal(appsv1alpha1.PhasePending))
+		Expect(refreshed.Status.Phase).To(Equal(appsv1alpha1.PhaseAborted))
 		Expect(refreshed.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeTargetFound))
 		Expect(refreshed.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
 		Expect(refreshed.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonNotFound))
 		Expect(refreshed.Status.Conditions[0].Message).To(Equal(msgTargetDeploymentNotExist))
-
-		// Verify finalizer
-		Expect(refreshed.Finalizers).To(Equal([]string{"apps.boolfixer.dev/finalizer"}))
 	})
 
 	It("freezes and then unfreezes the Deployment, restoring replicas and clearing ownership", func() {
@@ -197,15 +194,11 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
 		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
 		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
-		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(msgOwnershipAlreadyHeld)) // changed
+		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(fmt.Sprintf(msgOwnershipAcquiredFmt, dfz.Name, dep.Namespace, dep.Name)))
 		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
-		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusTrue)) // changed
+		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
 		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScaledToZero))
 		Expect(curDFZ.Status.Conditions[1].Message).To(Equal(msgDeploymentFullyScaledToZero))
-		Expect(curDFZ.Status.Conditions[2].Type).To(Equal(appsv1alpha1.ConditionTypeSpecChangedDuringFreeze))
-		Expect(curDFZ.Status.Conditions[2].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
-		Expect(curDFZ.Status.Conditions[2].Reason).To(Equal(appsv1alpha1.ConditionReasonObserved))
-		Expect(curDFZ.Status.Conditions[2].Message).To(Equal(msgSpecChangedDuringFreeze))
 
 		// Now the Deployment should be scaled to 0 and owned by this DFZ
 		var curDep appsv1.Deployment
@@ -271,10 +264,8 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseDenied))
 		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
 		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
-		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonDeniedAlreadyFrozen))
+		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonLost))
 		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(fmt.Sprintf(msgDeploymentAlreadyOwnedFmt, otherOwner)))
-		// Verify finalize
-		Expect(curDFZ.Finalizers).To(Equal([]string{"apps.boolfixer.dev/finalizer"}))
 
 		var curDep appsv1.Deployment
 		Expect(get(types.NamespacedName{Namespace: ns, Name: deployName}, &curDep)).To(Succeed())
@@ -417,15 +408,11 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
 		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
 		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonAcquired))
-		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(msgOwnershipAlreadyHeld))
+		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(fmt.Sprintf(msgOwnershipAcquiredFmt, dfz.Name, dep.Namespace, dep.Name)))
 		Expect(curDFZ.Status.Conditions[1].Type).To(Equal(appsv1alpha1.ConditionTypeFreezeProgress))
 		Expect(curDFZ.Status.Conditions[1].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
 		Expect(curDFZ.Status.Conditions[1].Reason).To(Equal(appsv1alpha1.ConditionReasonScaledToZero))
 		Expect(curDFZ.Status.Conditions[1].Message).To(Equal(msgDeploymentFullyScaledToZero))
-		Expect(curDFZ.Status.Conditions[2].Type).To(Equal(appsv1alpha1.ConditionTypeSpecChangedDuringFreeze))
-		Expect(curDFZ.Status.Conditions[2].Status).To(Equal(appsv1alpha1.ConditionStatusTrue))
-		Expect(curDFZ.Status.Conditions[2].Reason).To(Equal(appsv1alpha1.ConditionReasonObserved))
-		Expect(curDFZ.Status.Conditions[2].Message).To(Equal(msgSpecChangedDuringFreeze))
 
 		By("simulating ownership loss on the Deployment")
 		var curDep appsv1.Deployment
@@ -436,16 +423,16 @@ var _ = Describe("DeploymentFreezer Controller", Ordered, func() {
 		curDep.Annotations[annoFrozenBy] = otherOwner // overwrite with different owner
 		Expect(k8sClient.Update(ctx, &curDep)).To(Succeed())
 
-		// Reconcile should detect ownership lost and abort
+		// Reconcile should detect ownership lost and deny
 		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: dfzName}})
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(get(types.NamespacedName{Namespace: ns, Name: dfzName}, &curDFZ)).To(Succeed())
-		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseAborted))
+		Expect(curDFZ.Status.Phase).To(Equal(appsv1alpha1.PhaseDenied))
 		Expect(curDFZ.Status.Conditions[0].Type).To(Equal(appsv1alpha1.ConditionTypeOwnership))
 		Expect(curDFZ.Status.Conditions[0].Status).To(Equal(appsv1alpha1.ConditionStatusFalse))
 		Expect(curDFZ.Status.Conditions[0].Reason).To(Equal(appsv1alpha1.ConditionReasonLost))
-		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(msgOwnershipAnnotationLost))
+		Expect(curDFZ.Status.Conditions[0].Message).To(Equal(fmt.Sprintf(msgDeploymentAlreadyOwnedFmt, otherOwner)))
 	})
 
 	It("releases replicas and clears ownership on DFZ deletion", func() {
